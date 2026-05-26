@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+
+# 虛擬環境
+venv/
+env/
+
+# 執行結果（不上傳）
+*_results.json
+pipeline_results.json
+
+# 舊版 template 格式（v1 單檔，已由 templates/ 目錄取代）
+form_template.json
+
+# 表單圖片（可能含個人資料，請自行管理）
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.pdf
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude Code 內部設定（不上傳）
+.claude/
+
+# 使用者建立的模板（含個人資料，請自行管理）
+templates/*.json
