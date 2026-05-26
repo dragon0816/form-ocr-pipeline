@@ -1,0 +1,28 @@
+# Form OCR Pipeline — 依賴套件
+# 安裝方式：pip install -r requirements.txt
+
+# ── 核心依賴（所有平台）──────────────────────────────────────
+pillow>=10.0.0          # 圖片載入與處理
+opencv-python>=4.8.0    # 勾選框偵測（GUI 環境）
+# opencv-python-headless>=4.8.0  # 無顯示器環境（伺服器/CI）可改用此版
+numpy>=1.24.0           # 像素陣列運算
+ollama>=0.3.0           # 本機 VLM 推理（qwen2.5vl:7b）
+
+# ── macOS 專用 ───────────────────────────────────────────────
+# pip install pyobjc-framework-Vision
+# 需要 macOS 10.15+，Apple Silicon / Intel 均支援
+
+# ── Windows 專用 ─────────────────────────────────────────────
+# pip install winrt-runtime
+#             winrt-Windows.Media.Ocr
+#             winrt-Windows.Globalization
+#             winrt-Windows.Graphics.Imaging
+#             winrt-Windows.Storage.Streams
+# 需要 Windows 10 1809+ (Build 17763)
+
+# ── Linux fallback ───────────────────────────────────────────
+# 需另行安裝系統套件：sudo apt install tesseract-ocr
+# pip install pytesseract
+
+# ── VLM 模型（Ollama 本機推理）──────────────────────────────
+# 安裝 Ollama 後執行：ollama pull qwen2.5vl:7b

@@ -1,0 +1,3 @@
+# macOS 完整依賴（含 Apple Vision Framework）
+-r requirements.txt
+pyobjc-framework-Vision>=10.0

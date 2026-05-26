@@ -19,16 +19,16 @@ Native OS OCR（快速）→ 信心分流 → VLM 補強（低信心欄位）→
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install pillow opencv-python numpy ollama
 
 # macOS
-pip install pyobjc-framework-Vision
+pip install -r requirements-macos.txt
 
 # Windows
-pip install winrt-runtime winrt-Windows.Media.Ocr \
-            winrt-Windows.Globalization \
-            winrt-Windows.Graphics.Imaging \
-            winrt-Windows.Storage.Streams
+pip install -r requirements-windows.txt
+
+# Linux（Tesseract fallback）
+pip install -r requirements.txt
+sudo apt install tesseract-ocr   # Debian/Ubuntu
 ```
 
 VLM 模型（本機推理）：
