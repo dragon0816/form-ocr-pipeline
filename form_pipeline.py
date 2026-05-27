@@ -74,14 +74,45 @@ CHECKBOX_SECTION_LABELS = [
     "請問貴單位近期是否有採購",
 ]
 
+# WinRT OCR 將表格 □ 辨識為下列字元之一
+CHECKBOX_CHARS = frozenset("口囗□")
+
+# 備用白名單：OCR 沒有「口」前綴但仍是 checkbox 的項目（用正確標籤）
 CHECKBOX_WHITELIST = {
-    "NR-NTN", "OT-NTN", "WiFi", "LTE/5G NR",
-    "IOT-NTN", "JNR-NTN", "CiAN",
-    "Signal Integrity", "Spectrum Analyzer",
-    "Vector Network Analyzer", "Oscilloscope",
-    "Power Supply", "Signal Generator",
-    "六個月內有需求", "一年內有需求", "無需求", "有需求",
-    "其他：",
+    # Section 1
+    "NR-NTN", "IOT-NTN", "WiFi", "LTE/5G NR",
+    "Power Electronics", "Signal Integrity",
+    # Section 3
+    "Call box", "Source Measurement Unit", "Oscilloscope",
+    "Spectrum Analyzer", "Vector Network Analyzer",
+    "LCR Meter", "Power Supply",
+    # Section 4（含 OCR 常見殘字「有需求」→ normalize 成「六個月內有需求」）
+    "三個月內有需求", "六個月內有需求", "一年內有需求", "無需求", "有需求",
+}
+
+# WinRT OCR 拼字錯誤修正表（偵測後套用，讓 label 回到正確名稱）
+LABEL_NORMALIZE: dict[str, str] = {
+    # Section 1
+    "WlFi":                         "WiFi",
+    "power EIectronics":            "Power Electronics",
+    "Signallntegrity":              "Signal Integrity",
+    "其他•":                        "其他",
+    "其他 •":                       "其他",
+    # Section 2
+    "需要相關人員與我聯繫;產品,":      "需要相關人員與我聯繫;產品:",
+    "安排DEMO ,產品:":              "安排DEMO;產品:",
+    "提供報價;產品":                 "提供報價;產品:",
+    # Section 3
+    "CaII bOㄨ":                    "Call box",
+    "source Measurement Unit":      "Source Measurement Unit",
+    "OsciIIoscope":                 "Oscilloscope",
+    "spectrum Ana lyzer":           "Spectrum Analyzer",
+    "vector NetworkAnaIyzer":       "Vector Network Analyzer",
+    "Meter":                        "LCR Meter",
+    "PowerSupply":                  "Power Supply",
+    # Section 4
+    "二個月內有需求":               "三個月內有需求",
+    "有需求":                       "六個月內有需求",
 }
 
 
@@ -276,11 +307,28 @@ def extract_fields(blocks: list[TextBlock], image: Image.Image) -> list[FieldRes
 
 # ── 勾選框偵測（完整模式）───────────────────────────────────
 def detect_checkboxes(image_path: str, blocks: list[TextBlock]) -> list[CheckboxResult]:
+    """
+    WinRT OCR 感知的勾選框偵測。
+
+    問題根源：WinRT OCR 將表格的 □ 辨識為「口」/「囗」字元，
+    且常將同一列的多個 checkbox 項目合併成一個 OCR block，
+    例如：'囗source Measurement Unit口OsciIIoscope'。
+
+    策略：
+    1. 修正 section_ranges（移除硬限的 250px 上限）
+    2. 對含有「口」/「囗」的 block 以這些字元為分隔點切割，
+       用字元寬度比例估算每個 checkbox 的像素座標
+    3. 量測該座標的填充率，判斷是否打勾
+    4. 對沒有「口」前綴但符合白名單的 block，沿用向左掃描像素的備用邏輯
+    """
     img_bgr = cv2.imread(image_path)
     if img_bgr is None:
         return []
+
+    h_img, w_img = img_bgr.shape[:2]
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
+    # ── 1. Section Y 範圍（移除 250px 硬限）─────────────────
     section_ys: list[int] = []
     for b in blocks:
         for lbl in CHECKBOX_SECTION_LABELS:
@@ -288,52 +336,182 @@ def detect_checkboxes(image_path: str, blocks: list[TextBlock]) -> list[Checkbox
                 section_ys.append(b.bbox.y)
 
     if not section_ys:
-        section_ranges = [(0, gray.shape[0])]
+        section_ranges = [(0, h_img)]
     else:
         ss = sorted(set(section_ys))
         section_ranges = [
-            (sy, min(sy + 250, ss[i+1] if i+1 < len(ss) else gray.shape[0]))
+            (max(0, sy - 10),
+             ss[i + 1] if i + 1 < len(ss) else h_img)
             for i, sy in enumerate(ss)
         ]
 
-    NON_ITEM = set(CHECKBOX_SECTION_LABELS) | {
+    NON_LABEL_KW = set(CHECKBOX_SECTION_LABELS) | {
         "COMPANY RESTRICTED", "ROHDE", "Make ideas real",
         "基本資料", "填寫本文件", "若您有任何意見",
     }
 
-    results: list[CheckboxResult] = []
-    seen: set[str] = set()
+    # ── 2. 解析 OCR block 中的「口」/「囗」標記 ──────────────
+    # raw_items: (cb_x, cb_y, cb_size, label, method)
+    # method = "marker" → 口字元 IS checkbox；"look_left" → 向左掃描備用
+    raw_items: list[tuple[int, int, int, str, str]] = []
 
     for b in blocks:
         if not b.bbox:
             continue
         if not any(sy <= b.bbox.y <= ey for sy, ey in section_ranges):
             continue
-        if any(kw in b.text for kw in NON_ITEM):
-            continue
-        if len(b.text.strip()) < 2 or not match_whitelist(b.text):
+        if any(kw in b.text for kw in NON_LABEL_KW):
             continue
 
-        label = b.text.strip()
-        if label in seen:
-            continue
-        seen.add(label)
+        text = b.text
+        bx, by, bw, bh = b.bbox.x, b.bbox.y, b.bbox.w, b.bbox.h
+        cb_size = bh          # checkbox 高度 ≈ OCR block 高度
 
-        bx, by_, bw, bh = b.bbox.x, b.bbox.y, b.bbox.w, b.bbox.h
-        lx1, lx2 = max(0, bx - 35), max(0, bx - 5)
-        ly1, ly2 = max(0, by_ + 2), min(gray.shape[0], by_ + bh - 2)
+        if any(c in text for c in CHECKBOX_CHARS):
+            # 此 block 含「口」/「囗」→ 以字元寬度比例估算各 checkbox 的 X 座標
+            char_w = bw / max(len(text), 1)
+
+            # ── 情形 A：「口」出現在第一個字元之後（前綴文字）
+            # 例：'二個月內有需求口亠' 或 'Meter口PowerSupply'
+            # 前綴文字自身就是一個項目，checkbox 在其左方
+            first_cb = next((idx for idx, c in enumerate(text) if c in CHECKBOX_CHARS), -1)
+            if first_cb > 2:
+                prefix = text[:first_cb].strip()
+                if len(prefix) >= 2:
+                    raw_items.append((bx, by, bh, prefix, "look_left"))
+
+            # ── 情形 B：逐一掃描「口」標記，取其後方的標籤
+            i = 0
+            while i < len(text):
+                if text[i] in CHECKBOX_CHARS:
+                    cb_x = int(bx + i * char_w)
+                    j = i + 1
+                    while j < len(text) and text[j] not in CHECKBOX_CHARS:
+                        j += 1
+                    label = text[i + 1:j].strip()
+                    if len(label) >= 2 or not label:
+                        lbl = label if label else f"cb_{cb_x}_{by}"
+                        raw_items.append((cb_x, by, cb_size, lbl, "marker"))
+                    i = j
+                else:
+                    i += 1
+
+        elif match_whitelist(text) and len(text.strip()) >= 2:
+            # 沒有「口」前綴，但符合白名單 → checkbox 在文字左側
+            raw_items.append((bx, by, bh, text.strip(), "look_left"))
+
+        else:
+            # ── 情形 C：OCR 將 □ 誤識為非 ASCII 字元（如 'Ü'、'Û'、'Ö' 等）
+            # 條件：第一個字元非 ASCII（isascii()==False）且是字母，非中文，非已知 checkbox char
+            stripped = text.strip()
+            c0 = stripped[0] if stripped else ""
+            is_odd_leading = (
+                bool(c0)
+                and not c0.isascii()            # 非 ASCII（Ü、Û 等）
+                and c0.isalpha()                # 是字母而非標點
+                and not (0x4E00 <= ord(c0) <= 0x9FFF)  # 非中文
+                and c0 not in CHECKBOX_CHARS
+            )
+            if is_odd_leading and len(stripped) >= 3:
+                rest = stripped[1:].strip()
+                if len(rest) >= 2:
+                    raw_items.append((bx, by, bh, rest, "marker"))
+
+    # ── 3. 去重 ────────────────────────────────────────────────
+    # 優先保留 "marker" 方式；兩種重複條件：
+    #   a) 中心距 < 14px（位置幾乎相同）
+    #   b) 相同標籤 且 Y 距 < 25px（同一列的不同解析路徑）
+    raw_items.sort(key=lambda x: 0 if x[4] == "marker" else 1)   # marker 優先
+    kept: list[tuple[int, int, int, str, str]] = []
+    for item in raw_items:
+        cx, cy, _, label, _ = item
+        dup = False
+        for kx, ky, _, klabel, _ in kept:
+            if abs(cx - kx) < 14 and abs(cy - ky) < 14:
+                dup = True; break
+            if label == klabel and abs(cy - ky) < 25 and abs(cx - kx) < 120:
+                dup = True; break
+        if not dup:
+            kept.append(item)
+
+    # ── 3b. 對座標型標籤嘗試從附近 OCR block 補回可讀名稱 ────
+    NON_LABEL_KW2 = NON_LABEL_KW | CHECKBOX_CHARS
+    patched: list[tuple[int, int, int, str, str]] = []
+    for item in kept:
+        cb_x, cb_y, cb_size, label, method = item
+        if label.startswith("cb_"):
+            # 找右側 ≤ 100px、Y 距 ≤ 20px 的最近 OCR block
+            best_lbl, best_dist = label, float('inf')
+            for b2 in blocks:
+                if not b2.bbox:
+                    continue
+                if any(kw in b2.text for kw in NON_LABEL_KW):
+                    continue
+                h_gap = b2.bbox.x - (cb_x + cb_size)
+                v_diff = abs((b2.bbox.y + b2.bbox.h / 2) - (cb_y + cb_size / 2))
+                if -cb_size * 0.3 <= h_gap <= 100 and v_diff <= 20:
+                    dist = max(0, h_gap) + v_diff
+                    # 取「口」之後的第一段純文字
+                    clean = b2.text.strip()
+                    for c in CHECKBOX_CHARS:
+                        clean = clean.replace(c, " ")
+                    clean = clean.split()[0] if clean.split() else clean
+                    if len(clean) >= 2 and dist < best_dist:
+                        best_dist = dist
+                        best_lbl = clean
+            patched.append((cb_x, cb_y, cb_size, best_lbl, method))
+        else:
+            patched.append(item)
+    # 修補後再做一次去重（修補可能讓不同座標的 cb 取得相同標籤）
+    deduped2: list[tuple[int, int, int, str, str]] = []
+    for item in patched:
+        cx, cy, _, label, _ = item
+        dup = False
+        for kx, ky, _, klabel, _ in deduped2:
+            if abs(cx - kx) < 14 and abs(cy - ky) < 14:
+                dup = True; break
+            if label == klabel and abs(cy - ky) < 25 and abs(cx - kx) < 120:
+                dup = True; break
+        if not dup:
+            deduped2.append(item)
+    kept = deduped2
+
+    # ── 4. 量測填充率，產生結果 ──────────────────────────────
+    results: list[CheckboxResult] = []
+    for (cb_x, cb_y, cb_size, label, method) in kept:
+        if method == "marker":
+            # 「口」字元本身即 checkbox：量測其內部像素（排除邊框）
+            margin = max(2, int(cb_size * 0.18))
+            lx1 = max(0,     cb_x + margin)
+            lx2 = min(w_img, cb_x + cb_size - margin)
+            ly1 = max(0,     cb_y + margin)
+            ly2 = min(h_img, cb_y + cb_size - margin)
+        else:
+            # look_left：checkbox 在文字左方 5–40px
+            lx1 = max(0,     cb_x - 40)
+            lx2 = max(0,     cb_x - 5)
+            ly1 = max(0,     cb_y + 2)
+            ly2 = min(h_img, cb_y + cb_size - 2)
+
         if lx2 <= lx1 or ly2 <= ly1:
             continue
         region = gray[ly1:ly2, lx1:lx2]
         if region.size == 0:
             continue
-        fill = float(np.sum(region < 100)) / region.size
+
+        fill = float(np.sum(region < 110)) / region.size
         results.append(CheckboxResult(
-            label=label, checked=fill > CHECKBOX_FILL_THRESH,
+            label=label,
+            checked=fill > CHECKBOX_FILL_THRESH,
             bbox=BBox(lx1, ly1, lx2 - lx1, ly2 - ly1),
         ))
 
-    results.sort(key=lambda r: r.bbox.y if r.bbox else 0)
+    results.sort(key=lambda r: (r.bbox.y, r.bbox.x) if r.bbox else (0, 0))
+
+    # ── 5. 套用 OCR 拼字修正 ─────────────────────────────────
+    for r in results:
+        r.label = LABEL_NORMALIZE.get(r.label, r.label)
+
     return results
 
 

@@ -216,8 +216,10 @@ class WindowsWinRTOCR(OCRBackend):
             text = _smart_join(texts)
 
             # 從首末字取 bounding rect
+            # 注意：WinRT IVectorView 不支援負索引，必須用明確的正索引
+            word_count = len(texts)
             r0 = words[0].bounding_rect
-            r1 = words[-1].bounding_rect
+            r1 = words[word_count - 1].bounding_rect
             x = int(r0.x)
             y = int(r0.y)
             w = int(r1.x + r1.width) - x

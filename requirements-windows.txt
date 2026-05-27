@@ -1,7 +1,9 @@
 # Windows 完整依賴（含 WinRT OCR）
 -r requirements.txt
-winrt-runtime>=2.0.0
-winrt-Windows.Media.Ocr>=2.0.0
-winrt-Windows.Globalization>=2.0.0
-winrt-Windows.Graphics.Imaging>=2.0.0
-winrt-Windows.Storage.Streams>=2.0.0
+winrt-runtime>=3.2.1
+winrt-Windows.Foundation>=3.2.1
+winrt-Windows.Foundation.Collections>=3.2.1
+winrt-Windows.Media.Ocr>=3.2.1
+winrt-Windows.Globalization>=3.2.1
+winrt-Windows.Graphics.Imaging>=3.2.1
+winrt-Windows.Storage.Streams>=3.2.1
